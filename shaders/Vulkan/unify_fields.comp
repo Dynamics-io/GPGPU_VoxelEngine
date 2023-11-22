@@ -1,0 +1,151 @@
+#version 450
+
+struct Data{
+	vec4 values;
+};
+
+struct Static_Settings{
+    vec4 VoxelsPerMeter;
+    ivec4 ChunkMeterSize;
+    ivec4 ChunkSize;
+    ivec4 FullChunkSize;
+    vec4 skipDist;
+    vec4 half_;
+    vec4 SideLength;
+    ivec4 batches;
+};
+
+struct Run_Settings{
+    ivec4 Location;
+};
+
+struct Materials{
+    ivec4 material_types;
+    ivec4 material_ratios;
+};
+
+struct ISO_Material{
+    vec4 final_iso;
+    ivec4 material_types;
+    vec4 material_ratios;
+};
+
+layout(std140, binding = 0) buffer readonly SSBO_Static_Settings_In{
+	Static_Settings in_static_settings[ ];
+};
+
+layout(std140, binding = 1) buffer readonly SSBO_Run_Settings_In{
+	Run_Settings in_run_settings[ ];
+};
+
+layout(std140, binding = 2) buffer readonly SSBO_Geightmap_In{
+	Data in_heightmap_data[ ];
+};
+
+layout(std140, binding = 3) buffer readonly SSBO_ISO_In{
+	Data in_iso_data[ ];
+};
+
+layout(std140, binding = 4) buffer readonly SSBO_Material_In{
+	Materials in_material_data[ ];
+};
+
+layout(std140, binding = 5) buffer SSBO_ISO_Material_Out{
+	ISO_Material out_data[ ];
+};
+
+layout(std140, binding = 6) buffer SSBO_debug_Out{
+	Data out_debug_data[ ];
+};
+
+vec4 getISOval(uint index){
+    return in_iso_data[index].values;
+    /*uint buffer_index = index / 4;
+	uint access_index = index % 4;
+
+    return in_iso_data[buffer_index].values[access_index];*/
+}
+
+int C_3D_to_1D(int x, int y, int z, int width, int height) {
+	return z * width * height + y * width + x;
+}
+
+ivec3 C_1D_to_3D(int i, int width, int height) {
+	int z = i / (width * height);
+	int y = (i % (width * height)) / width;
+	int x = i % width;
+
+	return ivec3(x, y, z);
+}
+
+int GetVoxelIndex(int batch, int g_index, int size){
+    return (g_index % size);
+}
+
+int GetBatchIndex(int batch, int v_index, int size){
+    return (batch * size) + v_index;
+}
+
+float iso_sample(ivec3 p, int size_x, int size_z, int fullSize, int batch, int batchesPerGroup){
+    int voxel_index = C_3D_to_1D(p.x, p.y, p.z, size_x, size_z);
+    return getISOval(GetBatchIndex((batch % batchesPerGroup), voxel_index, fullSize)).w;
+}
+
+vec3 normal_sample(ivec3 p, float centerDistance, int size_x, int size_z, int fullSize, int batch, int batchesPerGroup){
+    //vec3 p = vec3(x, y, z);
+    int epsilon = 1; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
+    //float centerDistance = iso_sample(p);
+    float xDistance = iso_sample(p + ivec3(epsilon, 0, 0), size_x, size_z, fullSize, batch, batchesPerGroup);
+    float yDistance = iso_sample(p + ivec3(0, epsilon, 0), size_x, size_z, fullSize, batch, batchesPerGroup);
+    float zDistance = iso_sample(p + ivec3(0, 0, epsilon), size_x, size_z, fullSize, batch, batchesPerGroup);
+    vec3 normal = (vec3(xDistance - centerDistance, yDistance - centerDistance, zDistance - centerDistance)) / epsilon;
+    return -normal;
+}
+
+layout (local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+
+    Static_Settings static_settings = in_static_settings[0];
+
+    int inst_index = int(index) / static_settings.FullChunkSize[1];
+    Run_Settings run_settings = in_run_settings[inst_index];
+
+    if (run_settings.Location.w == -1){
+        return;
+    }
+
+    int batchIndex = run_settings.Location.w;
+    int batchIndexExpanded = run_settings.Location.w;
+    ivec4 batch = ivec4(batchIndex, batchIndexExpanded, static_settings.FullChunkSize[0], static_settings.FullChunkSize[1]);
+
+    int size_x = static_settings.ChunkSize[0] + 1;
+    int size_z = static_settings.ChunkSize[2] + 1;
+
+    int voxel_index = GetVoxelIndex(batchIndexExpanded, int(index), batch[3]);
+    ivec3 index_pos = C_1D_to_3D(voxel_index, size_x, size_z);
+
+    ISO_Material point;
+
+    float iso = getISOval(GetBatchIndex((batchIndexExpanded % static_settings.batches[0]), voxel_index, batch[3])).w;
+
+    // TODO: Apply heightmap.
+
+    //vec4 iso_normal = getISOval(GetBatchIndex((batchIndexExpanded % static_settings.batches[0]), voxel_index, batch[3]));
+    vec3 normal = normal_sample(index_pos, iso, size_x, size_z, static_settings.FullChunkSize[1], batchIndexExpanded, static_settings.batches[0]);
+    vec4 iso_normal = vec4(normal, iso);
+    
+    point.final_iso = iso_normal;
+
+    // TODO: Apply heightmap.
+
+    point.material_types = in_material_data[GetBatchIndex((batchIndexExpanded % static_settings.batches[0]), voxel_index, batch[3])].material_types;
+    point.material_ratios = in_material_data[GetBatchIndex((batchIndexExpanded % static_settings.batches[0]), voxel_index, batch[3])].material_ratios;
+
+    //out_debug_data[index].values = vec4(voxel_index, batchIndexExpanded, index, batch[3]);
+    //out_debug_data[GetBatchIndex(batchIndexExpanded, voxel_index, batch[3])].values = vec4(batchIndex, index, voxel_index, inst_index);
+
+    //out_data[index] = point;
+    out_data[GetBatchIndex((batchIndexExpanded % static_settings.batches[0]), voxel_index, batch[3])] = point;
+}
