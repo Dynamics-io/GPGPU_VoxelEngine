@@ -22,16 +22,18 @@ float sphere_sample(float radius, vec3 center, float x, float y, float z){
 
 float TerrainSample(Settings s, float x, float y)
 {
+    //return 0;
+
     Module perlin_mountains = GetModule(x, 0, y);
     perlin_mountains.m_seed = s.seed;
     perlin_mountains.m_frequency = 0.5;
     perlin_mountains.m_noiseQuality = s.quality;
 
-    Module mountains = GetModule(x, 0, y);
+    /*Module mountains = GetModule(x, 0, y);
     mountains.m_seed = s.seed;
     mountains.m_frequency = 0.5;
     mountains.m_lacunarity = 2;
-    mountains.m_noiseQuality = s.quality;
+    mountains.m_noiseQuality = s.quality;*/
 
     perlin_mountains = Perlin_GetValue(perlin_mountains);
 
@@ -42,19 +44,30 @@ float TerrainSample(Settings s, float x, float y)
 
 float GetHeight(Settings s, float x, float y)
 {
-   return TerrainSample(s, (x * (0.003)), (y * (0.003))) * 10 + 16;
+    //return x;//s.ChunkSizeZ / 2;
+    //return x / 1;
+    
+    s.seed = 0;
+    s.quality = QUALITY_STD;
+
+    float horizontal_scale = 0.03;
+    float amp = 20;
+    float offset = -3;
+    return TerrainSample(s, (x * (horizontal_scale)), (y * (horizontal_scale))) * amp + offset;
 }
 
 
-float Sample_2D(Settings s, float x, float z)
+float Sample_2D(Settings s, float x, float y)
 {
-    return GetHeight(s, x, z);
+    return GetHeight(s, x, y);
 }
 
 float Sample_3D(Settings s, float x, float y, float z)
 {
-    float radius = 10;
-    vec3 sphere_center = vec3(16, 16, 16);
+    return 0;
+
+    float radius = (s.ChunkSizeX / 2) - 0.5;
+    vec3 sphere_center = vec3(s.ChunkSizeX / 2, s.ChunkSizeY / 2, s.ChunkSizeZ / 2);
     float val = sphere_sample(radius, sphere_center, x, y, z);
     return val;
 }

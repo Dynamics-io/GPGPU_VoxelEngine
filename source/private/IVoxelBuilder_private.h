@@ -8,16 +8,16 @@ namespace VoxelEngine {
 	struct BlockType;
 	struct Rect;
 
-	class IVoxelBuilder {
+	class IVoxelBuilder_private {
 	public:
 
-		virtual void Init(ChunkSettings settings) = 0;
+		virtual void Init(ChunkSettings* settings) = 0;
 
 		//virtual void SetBlockTypes(BlockType* blockTypeList, Rect* AtlasUvs) = 0;
 
-		virtual glm::dvec4 Render(ChunkRenderOptions options) = 0;
+		virtual glm::dvec4 Render(ChunkRenderOptions* options) = 0;
 
-		virtual glm::dvec4 Generate(ChunkGenerationOptions options) = 0;
+		virtual glm::dvec4 Generate(ChunkGenerationOptions* options) = 0;
 
 		virtual std::vector<glm::ivec4> GetSize() = 0;
 

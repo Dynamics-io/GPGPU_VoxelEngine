@@ -6,28 +6,30 @@ set(${PROJECT_NAME}_headers
     C_Variables.h
     ForwardDeclarations.h
     Logger.h
-    IVoxelBuilder.h
+    IVoxelBuilder_private.h
     shared_structures.h
     SmoothVoxelBuilder.h
     marchingcubes_arrays.h
     VoxelComputeProgram.h
     HeightmapGenerator.h
+    ChunkProcessor_private.h
 )
 
 set(${PROJECT_NAME}_sources
     dll_main.cpp
     C_Variables.cpp
     Logger.cpp
-    IVoxelBuilder.cpp
+    IVoxelBuilder_private.cpp
     SmoothVoxelBuilder.cpp
     marchingcubes_arrays.cpp
     VoxelComputeProgram.cpp
     HeightmapGenerator.cpp
+    ChunkProcessor_private.cpp
 )
 
 #add_subdirectory(utils)
 
-add_library(${PROJECT_NAME} SHARED ${${PROJECT_NAME}_headers} ${${PROJECT_NAME}_sources})
+add_library(${PROJECT_NAME} STATIC ${${PROJECT_NAME}_headers} ${${PROJECT_NAME}_sources})
 
 target_link_libraries(${PROJECT_NAME} Compute_Interface)
 target_link_libraries(${PROJECT_NAME} Compute_DirectX)

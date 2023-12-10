@@ -1,6 +1,7 @@
 //#include "dll_main.h"
 #include "dynamic_compute.h"
 #include "SmoothVoxelBuilder.h"
+#include "ChunkProcessor.h"
 
 #include <time.h>
 #include <chrono>
@@ -13,6 +14,7 @@ using namespace DynamicCompute::Compute;
 using namespace VoxelEngine;
 //using namespace Dynamics_IO_Testbench::Util;
 
+int ChunkProcessorTest();
 int Vulkan_test();
 int OpenCL_test();
 int DirectX_test();
@@ -79,7 +81,8 @@ int main()
 {
 	//test_timer();
 
-	VoxelTest();
+	ChunkProcessorTest();
+	//VoxelTest();
 	//Vulkan_test();
 	//DirectX_test();
 	//OpenCL_test();
@@ -232,10 +235,10 @@ int VoxelTest()
 		data.push_back(new MeshData());
 	}
 
-	IVoxelBuilder* builder = new SmoothVoxelBuilder();
+	IVoxelBuilder_private* builder = new SmoothVoxelBuilder();
 
 	auto start = std::chrono::high_resolution_clock::now();
-	builder->Init(settings);
+	builder->Init(&settings);
 	auto end = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration<double>(end - start).count();
 	double init_t = duration;
@@ -244,13 +247,13 @@ int VoxelTest()
 
 
 	start = std::chrono::high_resolution_clock::now();
-	glm::dvec4 gen_times = builder->Generate(gen_options);
+	glm::dvec4 gen_times = builder->Generate(&gen_options);
 	end = std::chrono::high_resolution_clock::now();
 	duration = std::chrono::duration<double>(end - start).count();
 	double generate_t = duration;
 
 	start = std::chrono::high_resolution_clock::now();
-	glm::dvec4 render_times = builder->Render(render_options);
+	glm::dvec4 render_times = builder->Render(&render_options);
 	end = std::chrono::high_resolution_clock::now();
 	duration = std::chrono::duration<double>(end - start).count();
 	double render_t = duration;
@@ -330,6 +333,108 @@ int VoxelTest()
 	printf("Vertex: %i, Triangle: %i\n", counts[0].x, counts[0].x);
 
 	//delete data;
+
+	return 0;
+}
+
+int ChunkProcessorTest() {
+
+	int size = 32;
+
+	std::string dir = "C:/Users/Jon/Source/cpp_libs/VoxelEngine/shaders/Vulkan/voxel";
+
+	ChunkProcessorSettings settings;
+	strcpy(settings.ProgramDirectory, dir.c_str());
+
+	settings.BatchesPerGroup = 2;
+	settings.TotalBatchGroups = 2;
+	settings.chunkMeterSizeX = size;
+	settings.chunkMeterSizeY = size;
+	settings.chunkMeterSizeZ = size;
+
+	int m_numChunksInBatch = settings.BatchesPerGroup * settings.TotalBatchGroups;
+
+	ChunkProcessor* chunk_processor = new ChunkProcessor(settings);
+
+	ChunkRequest* requests = new ChunkRequest[1];
+
+	/*for (int i = 0; i < 1; i++) {
+		requests[i] = ChunkRequest(0, 0, 0);
+	}*/
+
+	int NumChunksX = 2;
+	int NumChunksY = 2;
+	int NumChunksZ = 2;
+
+	int startX = -NumChunksX / 2;
+	int startY = -NumChunksY / 2;
+	int startZ = -NumChunksZ / 2;
+
+	std::queue<ChunkRequest*> m_chunk_requests;
+	ChunkRequest** batch_staging = new ChunkRequest*[m_numChunksInBatch];
+
+	for (int x = startX, x_i = 0; x_i < NumChunksX; x_i++, x++) {
+		for (int y = startY, y_i = 0; y_i < NumChunksY; y_i++, y++) {
+			for (int z = startZ, z_i = 0; z_i < NumChunksZ; z_i++, z++) {
+
+				m_chunk_requests.push(new ChunkRequest(x, y, z));
+
+			}
+		}
+	}
+
+	std::vector<ChunkRequest*> processed_requests;
+
+	while (!m_chunk_requests.empty()) {
+
+		int r_index = 0;
+
+		while (!m_chunk_requests.empty() && r_index < m_numChunksInBatch) {
+			ChunkRequest* next_req = nullptr;
+
+			//m_chunk_requests.Dequeue(next_req);
+			next_req = m_chunk_requests.front();
+			m_chunk_requests.pop();
+
+			//batch.Add(next_req);
+			batch_staging[r_index] = next_req;
+
+			processed_requests.push_back(next_req);
+
+			r_index++;
+		}
+
+		chunk_processor->PushRequests(batch_staging, r_index);
+
+	}
+
+
+	chunk_processor->Process();
+
+	OutVertex3D* vert = (OutVertex3D*)requests[0].Vertex_Ptr();
+
+	for (int i = 0; i < requests[0].GetNumVertices(); i++) {
+		printf("Vert %i: (%f, %f, %f, %f)\n", i, vert[i].X, vert[i].Y, vert[i].Z, vert[i].W);
+	}
+
+	for (int i = 0; i < processed_requests.size(); i++) {
+		printf("chunk (%i, %i, %i): %i vertices\n", 
+			processed_requests[i]->X, processed_requests[i]->Y, processed_requests[i]->Z, processed_requests[i]->GetNumVertices());
+		//printf("Chunk %i: %i\n", i, requests[i].GetNumVertices());
+		//UE_LOG(VoxelEngine_Log, Display, TEXT("Chunk %d: %d"), i, requests[i].GetNumVertices());
+	}
+
+	ChunkRequest* pick = processed_requests[1];
+	OutVertex3D* verts = (OutVertex3D*)pick->Vertex_Ptr();
+	for (int i = 0; i < pick->GetNumVertices(); i++) {
+		//printf("%i: (%f, %f, %f)\n", i,
+		//	verts[i].X, verts[i].Y, verts[i].Z);
+	}
+
+	delete[] requests;
+
+	chunk_processor->Dispose();
+	delete chunk_processor;
 
 	return 0;
 }
@@ -441,7 +546,7 @@ int OpenCL_test()
 		printf("Platform %s:\n", p.name);
 
 		std::vector<OpenCL_Device_Info> devices = ComputeInterface::GetSupportedDevices_OpenCL(p);
-		for (auto info : devices)
+		for (OpenCL_Device_Info info : devices)
 		{
 			//OpenCL_Device_Info info = d.OpenCL_Info;
 			//printf("\t%s - %s: Frequency: %u, threads: %u, Memory: %lu, Work Size: %u \n", info.vendor, info.name, info.clock_frequency, info.num_compute_units * info.group_size, info.mem_size, info.max_work_size);

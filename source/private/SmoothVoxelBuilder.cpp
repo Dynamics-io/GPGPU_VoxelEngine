@@ -6,6 +6,8 @@ using namespace VoxelEngine;
 
 #define USE_CACHE false
 
+#define USE_HEIGHTMAP_CACHE false
+
 glm::fvec4 DirectionOffsets_f(int index) {
     return (glm::fvec4)MarchingCubesArrays::directionOffsets[index];
 }
@@ -14,13 +16,59 @@ glm::ivec4 DirectionOffsets_i(int index) {
     return MarchingCubesArrays::directionOffsets[index];
 }
 
-int C_2D_To_1D(int x, int y, int width) {
-    return y * width + x;
+int Hash_3D(int x, int y, int z) {
+    return x ^ y << 2 ^ z >> 2;
 }
 
-void VoxelEngine::SmoothVoxelBuilder::Init(ChunkSettings settings)
+int Hash_2D(int x, int y) {
+    return Hash_3D(x, y, 0);
+}
+
+/*#define MAX_HEIGHTMAPS_X 10000000
+int C_2D_To_1D(int x, int y) {
+    return y * MAX_HEIGHTMAPS_X + x;
+}*/
+
+int* get_null() {
+    return nullptr;
+}
+
+void All_Zero(glm::vec4* data, int num, std::string marker) {
+    bool all_zero = true;
+    for (int i = 0; i < num; i++) {
+        if (data[i].x != 0 ||
+            data[i].y != 0 ||
+            data[i].z != 0) {
+            all_zero = false;
+        }
+    }
+
+    if (all_zero) {
+        printf("%s: All zero!!\n", marker.c_str());
+    }
+}
+
+int GetBatchNumIndex(SmoothVoxelBuilder::Run_Settings* group_start, int numGroups, glm::ivec3 search) {
+    for (int i = 0; i < numGroups; i++) {
+        if (search.x == group_start[i].Location.x &&
+            search.y == group_start[i].Location.y &&
+            search.z == group_start[i].Location.z) {
+            
+            return i;
+        }
+        //printf("(%i, %i, %i)\n",
+        //    group_start[i].Location.x, group_start[i].Location.y, group_start[i].Location.z);
+    }
+    return -1;
+}
+
+void VoxelEngine::SmoothVoxelBuilder::Init(ChunkSettings* settings)
 {
-    Settings p_settings = *settings.GetSettings();
+    //printf("break\n");
+    //int* test = get_null();
+    //int test1 = *test;
+    //printf("%i\n", test1);
+    Settings p_settings = *settings->GetSettings();
 
     float vpm = p_settings.getFloat("voxelsPerMeter");
 
@@ -41,6 +89,8 @@ void VoxelEngine::SmoothVoxelBuilder::Init(ChunkSettings settings)
     m_run_settings = new Run_Settings[m_totalBatches];
 
     m_shaderDir = p_settings.getString("programDir");
+
+    m_invert_tris = p_settings.getInt("InvertTrianges") >= 1 ? true : false;
     
     CalculateVariables();
 
@@ -60,7 +110,7 @@ void SmoothVoxelBuilder::SetRunSettings(std::vector<glm::ivec3> locations) {
     }
 }
 
-glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Render(ChunkRenderOptions options)
+glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Render(ChunkRenderOptions* options)
 {
     //int cx = options.X;
     //int cy = options.Y;
@@ -79,7 +129,7 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Render(ChunkRenderOptions options)
     m_run_settings.Y = cy;
     m_run_settings.Z = cz;*/
 
-    SetRunSettings(options.locations);
+    SetRunSettings(options->locations);
 
     //m_run_settings.Location = glm::ivec4(cx, cy, cz, 0);
 
@@ -95,7 +145,7 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Render(ChunkRenderOptions options)
     return times;
 }
 
-glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Generate(ChunkGenerationOptions options)
+glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Generate(ChunkGenerationOptions* options)
 {
     /*
     float Data[DATA_SIZE] = { 0 };
@@ -114,7 +164,7 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Generate(ChunkGenerationOptions opti
     }
     */
 
-    SetRunSettings(options.locations);
+    SetRunSettings(options->locations);
 
     glm::dvec4 result = glm::dvec4(0,0,0,0);
 
@@ -132,11 +182,11 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Generate(ChunkGenerationOptions opti
         //}
 
         GenerateHeightmap(i, start);
-        result.x += GenerateISOField(i);
-        //GenerateMaterialField(i);
-        result.y += AssembleUnifiedField(i);
+        result.x += GenerateISOField(i, start);
+        //GenerateMaterialField(i, start);
+        result.y += AssembleUnifiedField(i, start);
 
-        result.z += Construct(i);
+        result.z += Construct(i, start);
     }
 
     return result;
@@ -148,13 +198,19 @@ std::vector<glm::ivec4> VoxelEngine::SmoothVoxelBuilder::GetSize()
 
     m_out_counts_buffer->GetData(counts_cache.data());
 
+    int running_total = 0;
+    for (int i = 0; i < counts_cache.size(); i++) {
+        counts_cache[i].y = running_total;
+        running_total += counts_cache[i].x;
+    }
+
     return counts_cache;
 }
 
 void VoxelEngine::SmoothVoxelBuilder::ReleaseHeightmap(int x, int z)
 {
 
-    int index = C_2D_To_1D(x, z, m_static_settings.ChunkSize.x + 1);
+    int index = Hash_2D(x, z);
 
     if (m_heightmap_cache.count(index) <= 0) {
         return;
@@ -230,7 +286,7 @@ void VoxelEngine::SmoothVoxelBuilder::InitializeComputePrograms()
     
     //m_program_compute = new VoxelComputeProgram(m_controller, PROGRAM);
 
-    //m_program_heightmap = new VoxelComputeProgram(m_controller, PROGRAM_HEIGHTMAP, m_WorkGroups);
+    m_program_heightmap = new VoxelComputeProgram(m_controller, PROGRAM_HEIGHTMAP, m_WorkGroups);
     m_program_iso_field = new VoxelComputeProgram(m_controller, PROGRAM_ISO_FIELD, m_WorkGroups);
     //m_program_material_field = new VoxelComputeProgram(m_controller, PROGRAM_MATERIAL_FIELD, m_WorkGroups);
     m_program_unify_fields = new VoxelComputeProgram(m_controller, PROGRAM_UNIFY_FIELDS, m_WorkGroups);
@@ -265,12 +321,13 @@ void VoxelEngine::SmoothVoxelBuilder::CreateComputeBuffers()
     in_TriTable_Buffer = m_controller->NewReadBuffer(4096, sizeof(int));
 
     // 32768
-    int expanded_chunk_size = (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1) * (m_static_settings.ChunkSize.z + 1);
-    int expanded_heightmap_size = (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1);
+    int expanded_chunk_size_1 = (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1) * (m_static_settings.ChunkSize.z + 1);
+    int expanded_chunk_size_2 = (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2) * (m_static_settings.ChunkSize.z + 2);
+    int expanded_heightmap_size = (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2);
     m_heightmap_data_buffer = m_controller->NewReadWriteBuffer(expanded_heightmap_size * m_numBatchesPerGroup, sizeof(float)); // 4356 bytes / chunk
-    m_iso_field_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size * m_numBatchesPerGroup, sizeof(glm::fvec4)); // 574,992 bytes / chunk
-    m_material_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size * m_numBatchesPerGroup, sizeof(glm::fvec4) * 2); // 1,048,576 bytes / chunk
-    m_iso_mat_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size * m_numBatchesPerGroup, sizeof(ISO_Material)); // 1,572,864 bytes / chunk
+    m_iso_field_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size_2 * m_numBatchesPerGroup, sizeof(glm::fvec4)); // 574,992 bytes / chunk
+    m_material_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size_2 * m_numBatchesPerGroup, sizeof(glm::fvec4) * 2); // 1,048,576 bytes / chunk
+    m_iso_mat_buffer = m_controller->NewReadWriteBuffer(expanded_chunk_size_1 * m_numBatchesPerGroup, sizeof(ISO_Material)); // 1,572,864 bytes / chunk
     // size of above: 3,200,788 bytes / chunk
 
 
@@ -287,7 +344,8 @@ void VoxelEngine::SmoothVoxelBuilder::CreateComputeBuffers()
 
 
     //out_Debug_Grid_buffer = m_controller->NewReadWriteBuffer(m_static_settings.FullChunkSize[0] * 8, sizeof(glm::fvec4));
-    out_Debug_Grid_buffer = m_controller->NewReadWriteBuffer(m_static_settings.FullChunkSize[1] * m_totalBatches, sizeof(glm::fvec4));
+    //out_Debug_Grid_buffer = m_controller->NewReadWriteBuffer(m_static_settings.FullChunkSize[1] * m_totalBatches, sizeof(glm::fvec4));
+    out_Debug_Grid_buffer = m_controller->NewReadWriteBuffer(expanded_heightmap_size * m_numBatchesPerGroup, sizeof(glm::fvec4));
 
     //const int max_size = UINT16_MAX * sizeof(glm::vec4);
     m_out_vertex_buffer = m_controller->NewWriteBuffer(UINT16_MAX * m_totalBatches, sizeof(glm::vec4));
@@ -315,17 +373,17 @@ void VoxelEngine::SmoothVoxelBuilder::CreateComputeBuffers()
     in_edgeTable_Buffer->SetData((void*)MarchingCubesArrays::edgeTable);
     in_TriTable_Buffer->SetData((void*)MarchingCubesArrays::triTable);
 
-    ISO_Material* zero_data = new ISO_Material[expanded_chunk_size * m_numBatchesPerGroup];
+    //ISO_Material* zero_data = new ISO_Material[expanded_chunk_size * m_numBatchesPerGroup];
     //int* zero_data2 = new int[UINT16_MAX];
-    ZeroMemory(zero_data, expanded_chunk_size * m_numBatchesPerGroup * sizeof(ISO_Material));
+    //ZeroMemory(zero_data, expanded_chunk_size * m_numBatchesPerGroup * sizeof(ISO_Material));
     //ZeroMemory(zero_data2, UINT16_MAX * sizeof(int));
 
     //zero_data2[6] = 7;
 
-    m_iso_mat_buffer->SetData(zero_data);
+    //m_iso_mat_buffer->SetData(zero_data);
     //m_out_triangles_buffer->SetData(zero_data2);
 
-    delete[] zero_data;
+    //delete[] zero_data;
     //delete[] zero_data2;
 
     // Bind buffers.
@@ -333,7 +391,13 @@ void VoxelEngine::SmoothVoxelBuilder::CreateComputeBuffers()
     //m_program_compute.AddBuffer(0, m_in_Buffer);
     //m_program_compute.AddBuffer(1, m_out_Buffer);
 
-    //m_program_heightmap
+
+    m_program_heightmap->AddBuffer(0, m_in_static_settings_buffer);
+    m_program_heightmap->AddBuffer(1, m_in_run_settings_buffer);
+    m_program_heightmap->AddBuffer(2, m_heightmap_data_buffer);
+    m_program_heightmap->AddBuffer(3, out_Debug_Grid_buffer);
+
+
     m_program_iso_field->AddBuffer(0, m_in_static_settings_buffer);
     m_program_iso_field->AddBuffer(1, m_in_run_settings_buffer);
     m_program_iso_field->AddBuffer(2, m_iso_field_buffer);
@@ -432,7 +496,7 @@ void VoxelEngine::SmoothVoxelBuilder::FinalizePrograms()
 {
     //m_program_compute.Finalize();
     
-    //m_program_heightmap->Finalize();
+    m_program_heightmap->Finalize();
     m_program_iso_field->Finalize();
     //m_program_material_field->Finalize();
     m_program_unify_fields->Finalize();
@@ -451,9 +515,20 @@ void VoxelEngine::SmoothVoxelBuilder::FinalizePrograms()
 
 double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Settings* group_set)
 {
+    if (USE_HEIGHTMAP_CACHE)
+    {
+        return GenerateHeightmap_do_cache(group, group_set);
+    }
+    else {
+        return GenerateHeightmap_dont_cache(group, group_set);
+    }
+}
+
+double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap_do_cache(int group, Run_Settings* group_set)
+{
     auto start = std::chrono::high_resolution_clock::now();
 
-    int heightmap_size = (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1);
+    int heightmap_size = (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2);
 
     std::vector<Run_Settings> heightmap_runs;
     std::vector<Run_Settings> duplicate_runs;
@@ -462,7 +537,7 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
     bool hasDisabledChunks = false;
     for (int i = 0; i < m_numBatchesPerGroup; i++) {
         auto chunk_location = group_set[i].Location;
-        int col_index = C_2D_To_1D(chunk_location.x, chunk_location.z, m_static_settings.ChunkSize.x + 1);
+        int col_index = Hash_2D(chunk_location.x, chunk_location.z);
 
         if (m_heightmap_cache.count(col_index) <= 0) {
 
@@ -473,15 +548,15 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
                 m_unused_heightmaps.pop();
 
                 m_heightmap_cache[col_index] = chached_heightmap;
-                
+
                 Run_Settings settings;
                 settings.Location = glm::ivec4(chunk_location.x, chunk_location.z, i, col_index);
-                
+
                 execution_runs_list.push_back(i);
                 heightmap_runs.push_back(settings);
 
                 //m_program_heightmap->Execute(m_numBatchesPerGroup * heightmap_size, 0, 0);
-            
+
                 //m_heightmap_data_buffer->CopyTo(chached_heightmap, i * heightmap_size, 0, heightmap_size * sizeof(float));
                 m_activeColumIndex[i] = col_index;
             }
@@ -512,7 +587,7 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
                     chached_heightmap->CopyTo(m_heightmap_data_buffer, 0, i * heightmap_size * sizeof(float), heightmap_size * sizeof(float));
                 }
 
-                
+
 
                 m_activeColumIndex[i] = col_index;
             }
@@ -531,7 +606,7 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
         m_program_heightmap->Execute(heightmap_runs.size() * heightmap_size, 0, 0);
 
         for (int i = 0; i < heightmap_runs.size(); i++) {
-            auto run = heightmap_runs[i];
+            Run_Settings run = heightmap_runs[i];
             IComputeBuffer* chached_heightmap = m_heightmap_cache[run.Location.w];
             m_heightmap_data_buffer->CopyTo(chached_heightmap, run.Location.z * heightmap_size * sizeof(float), 0, heightmap_size * sizeof(float));
         }
@@ -544,7 +619,7 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
     //      in the active buffer.
     if (duplicate_runs.size() > 0) {
         for (int i = 0; i < duplicate_runs.size(); i++) {
-            auto run = duplicate_runs[i];
+            Run_Settings run = duplicate_runs[i];
             IComputeBuffer* chached_heightmap = m_heightmap_cache[run.Location.z];
             chached_heightmap->CopyTo(m_heightmap_data_buffer, run.Location.y * heightmap_size * sizeof(float), 0, heightmap_size * sizeof(float));
         }
@@ -555,11 +630,56 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap(int group, Run_Setting
     return duration;
 }
 
-double VoxelEngine::SmoothVoxelBuilder::GenerateISOField(int group)
+double VoxelEngine::SmoothVoxelBuilder::GenerateHeightmap_dont_cache(int group, Run_Settings* group_start)
 {
     auto start = std::chrono::high_resolution_clock::now();
 
-    m_program_iso_field->Execute(m_numBatchesPerGroup * (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1) * (m_static_settings.ChunkSize.z + 1), 0, 0);
+
+    int heightmap_size = (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2);
+
+    m_program_heightmap->Execute(m_numBatchesPerGroup * heightmap_size, 0, 0);
+
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration<double>(end - start).count();
+
+    /*int search_i = GetBatchNumIndex(group_start, m_numBatchesPerGroup, glm::ivec3(-1, -1, -1));
+
+    if (search_i == -1) {
+        return duration;
+    }
+
+    printf("Found heightmap in batch index %i\n", search_i);*/
+
+    //float* Data = new float[heightmap_size];
+    //glm::fvec4* Data = new glm::fvec4[heightmap_size];
+    //glm::fvec4* Data1 = new glm::fvec4[heightmap_size];
+
+    //out_Debug_Grid_buffer->GetData(Data, 0 * heightmap_size * sizeof(glm::fvec4), heightmap_size * sizeof(glm::fvec4));
+    //out_Debug_Grid_buffer->GetData(Data1, 1 * heightmap_size * sizeof(glm::fvec4), heightmap_size * sizeof(glm::fvec4));
+    //m_heightmap_data_buffer->GetData(Data, search_i * heightmap_size * sizeof(float), heightmap_size * sizeof(float));
+
+    /*for (int i = 0; i < heightmap_size; i++)
+    {
+        //printf("height res '%i': %f\n", i, Data[i]);
+        //printf("heightmap debug %i: (%f, %f, %f, %f)\n", i,
+        //    Data[i].x, Data[i].y, Data[i].z, Data[i].w);
+
+        //printf("heightmap debug %i: (%f, %f, %f, %f), (%f, %f, %f, %f)\n", i,
+        //    Data[i].x, Data[i].y, Data[i].z, Data[i].w, 
+        //    Data1[i].x, Data1[i].y, Data1[i].z, Data1[i].w);
+    }*/
+
+    //delete[] Data;
+
+    return duration;
+}
+
+double VoxelEngine::SmoothVoxelBuilder::GenerateISOField(int group, Run_Settings* group_start)
+{
+    auto start = std::chrono::high_resolution_clock::now();
+
+    m_program_iso_field->Execute(m_numBatchesPerGroup * (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2) * (m_static_settings.ChunkSize.z + 2), 0, 0);
     
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration<double>(end - start).count();
@@ -576,46 +696,61 @@ double VoxelEngine::SmoothVoxelBuilder::GenerateISOField(int group)
     return duration;
 }
 
-double VoxelEngine::SmoothVoxelBuilder::GenerateMaterialField(int group)
+double VoxelEngine::SmoothVoxelBuilder::GenerateMaterialField(int group, Run_Settings* group_start)
 {
     auto start = std::chrono::high_resolution_clock::now();
 
-    m_program_material_field->Execute(m_numBatchesPerGroup * (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1) * (m_static_settings.ChunkSize.z + 1), 0, 0);
+    m_program_material_field->Execute(m_numBatchesPerGroup * (m_static_settings.ChunkSize.x + 2) * (m_static_settings.ChunkSize.y + 2) * (m_static_settings.ChunkSize.z + 2), 0, 0);
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration<double>(end - start).count();
     return duration;
 }
 
-double VoxelEngine::SmoothVoxelBuilder::AssembleUnifiedField(int group)
+double VoxelEngine::SmoothVoxelBuilder::AssembleUnifiedField(int group, Run_Settings* group_start)
 {
     auto start = std::chrono::high_resolution_clock::now();
 
     m_program_unify_fields->Execute(m_numBatchesPerGroup * (m_static_settings.ChunkSize.x + 1) * (m_static_settings.ChunkSize.y + 1) * (m_static_settings.ChunkSize.z + 1), 0, 0);
        
-    /*glm::vec4* Data_debug1 = new glm::vec4[m_static_settings.FullChunkSize[1]];
-    glm::vec4* Data_debug2 = new glm::vec4[m_static_settings.FullChunkSize[1]];
+    //int search_i = GetBatchNumIndex(group_start, m_numBatchesPerGroup, glm::ivec3(0, 0, 0));
 
-    ISO_Material* Data_iso1 = new ISO_Material[m_static_settings.FullChunkSize[1]];
-    ISO_Material* Data_iso2 = new ISO_Material[m_static_settings.FullChunkSize[1]];
+    /*if (search_i == -1) {
+        return 0;
+    }
+
+    printf("Found chunk in batch index %i\n", search_i);*/
+
+    //glm::vec4* Data_debug1 = new glm::vec4[m_static_settings.FullChunkSize[1]];
+    //glm::vec4* Data_debug2 = new glm::vec4[m_static_settings.FullChunkSize[1]];
+
+    
+    //ISO_Material* Data_iso1 = new ISO_Material[m_static_settings.FullChunkSize[1]];
+    //ISO_Material* Data_iso2 = new ISO_Material[m_static_settings.FullChunkSize[1]];
 
     //out_Debug_Grid_buffer->GetData(Data_debug1, 0 * m_static_settings.FullChunkSize[1] * sizeof(glm::vec4), m_static_settings.FullChunkSize[1] * sizeof(glm::vec4));
     //out_Debug_Grid_buffer->GetData(Data_debug2, 1 * m_static_settings.FullChunkSize[1] * sizeof(glm::vec4), m_static_settings.FullChunkSize[1] * sizeof(glm::vec4));
 
-    m_iso_mat_buffer->GetData(Data_iso1, 0 * m_static_settings.FullChunkSize[1] * sizeof(ISO_Material), m_static_settings.FullChunkSize[1] * sizeof(ISO_Material));
-    m_iso_mat_buffer->GetData(Data_iso2, 1 * m_static_settings.FullChunkSize[1] * sizeof(ISO_Material), m_static_settings.FullChunkSize[1] * sizeof(ISO_Material));
+    //m_iso_mat_buffer->GetData(Data_iso1, search_i * m_static_settings.FullChunkSize[1] * sizeof(ISO_Material), m_static_settings.FullChunkSize[1] * sizeof(ISO_Material));
+    //m_iso_mat_buffer->GetData(Data_iso2, 1 * m_static_settings.FullChunkSize[1] * sizeof(ISO_Material), m_static_settings.FullChunkSize[1] * sizeof(ISO_Material));
 
-    for (int i = 0; i < m_static_settings.FullChunkSize[1]; i++) {
-        printf("res grid '%i': (%f, %f, %f, %f), (%f, %f, %f, %f)\n", i,
-            Data_debug1[i].x, Data_debug1[i].y, Data_debug1[i].z, Data_debug1[i].w,
-            Data_debug2[i].x, Data_debug2[i].y, Data_debug2[i].z, Data_debug2[i].w
-        );
+    //for (int i = 0; i < m_static_settings.FullChunkSize[1]; i++) {
+        //printf("res grid '%i': (%f, %f, %f, %f), (%f, %f, %f, %f)\n", i,
+        //    Data_debug1[i].x, Data_debug1[i].y, Data_debug1[i].z, Data_debug1[i].w,
+        //    Data_debug2[i].x, Data_debug2[i].y, Data_debug2[i].z, Data_debug2[i].w
+        //);
 
-        printf("res grid '%i': (%f, %f, %f, %f), (%f, %f, %f, %f)\n", i,
-            Data_iso1[i].final_iso.x, Data_iso1[i].final_iso.y, Data_iso1[i].final_iso.z, Data_iso1[i].final_iso.w,
-            Data_iso2[i].final_iso.x, Data_iso2[i].final_iso.y, Data_iso2[i].final_iso.z, Data_iso2[i].final_iso.w
-        );
-    }*/
+        /*if (Data_iso1[i].final_iso.w > -1) {
+            printf("res grid '%i': (%f, %f, %f, %f)\n", i,
+                Data_iso1[i].final_iso.x, Data_iso1[i].final_iso.y, Data_iso1[i].final_iso.z, Data_iso1[i].final_iso.w
+            );
+        }*/
+
+        //printf("res grid '%i': (%f, %f, %f, %f), (%f, %f, %f, %f)\n", i,
+        //    Data_iso1[i].final_iso.x, Data_iso1[i].final_iso.y, Data_iso1[i].final_iso.z, Data_iso1[i].final_iso.w,
+        //    Data_iso2[i].final_iso.x, Data_iso2[i].final_iso.y, Data_iso2[i].final_iso.z, Data_iso2[i].final_iso.w
+        //);
+    //}
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration<double>(end - start).count();
@@ -627,7 +762,7 @@ double VoxelEngine::SmoothVoxelBuilder::AssembleUnifiedField(int group)
 
 
 
-double VoxelEngine::SmoothVoxelBuilder::Construct(int group)
+double VoxelEngine::SmoothVoxelBuilder::Construct(int group, Run_Settings* group_start)
 {
     auto start = std::chrono::high_resolution_clock::now();
     /*for (int i = 0; i < m_numBatchGroups; i++) {
@@ -639,15 +774,28 @@ double VoxelEngine::SmoothVoxelBuilder::Construct(int group)
     auto duration = std::chrono::duration<double>(end - start).count();
     double construct_t = duration;
 
-    /*int* Data_count1 = new int[m_static_settings.FullChunkSize[0]];
-    int* Data_count2 = new int[m_static_settings.FullChunkSize[0]];
+    /*int search_i = GetBatchNumIndex(group_start, m_numBatchesPerGroup, glm::ivec3(0, 0, 0));
 
-    m_trans_counts_buffer->GetData(Data_count1, (group * m_numBatchesPerGroup + 0) * m_static_settings.FullChunkSize[0] * sizeof(int), m_static_settings.FullChunkSize[0] * sizeof(int));
-    m_trans_counts_buffer->GetData(Data_count2, (group * m_numBatchesPerGroup + 1) * m_static_settings.FullChunkSize[0] * sizeof(int), m_static_settings.FullChunkSize[0] * sizeof(int));
+    if (search_i == -1) {
+        return 0;
+    }
 
-    for (int i = 0; i < m_static_settings.FullChunkSize[0]; i++) {
-        printf("res '%i': %i ; %i\n", i, Data_count1[i], Data_count2[i]);
+    printf("Found chunk in batch index %i\n", search_i);*/
+
+
+    //int* Data_count1 = new int[m_static_settings.FullChunkSize[0]];
+    //int* Data_count2 = new int[m_static_settings.FullChunkSize[0]];
+
+    //m_trans_counts_buffer->GetData(Data_count1, (group * m_numBatchesPerGroup + search_i) * m_static_settings.FullChunkSize[0] * sizeof(int), m_static_settings.FullChunkSize[0] * sizeof(int));
+    //m_trans_counts_buffer->GetData(Data_count2, (group * m_numBatchesPerGroup + 1) * m_static_settings.FullChunkSize[0] * sizeof(int), m_static_settings.FullChunkSize[0] * sizeof(int));
+
+    /*for (int i = 0; i < m_static_settings.FullChunkSize[0]; i++) {
+        //printf("res '%i': %i ; %i\n", i, Data_count1[i], Data_count2[i]);
+        if (Data_count1[i] > 0)
+            printf("res '%i': %i\n", i, Data_count1[i]);
     }*/
+
+    //delete[] Data_count1;
 
     return construct_t;
 }
@@ -687,8 +835,26 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::DoRender()
 
     start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < m_numBatchGroups; i++) {
-        m_in_run_settings_buffer->SetData(&m_run_settings[i * m_numBatchesPerGroup], m_numBatchesPerGroup * sizeof(Run_Settings));
+        int start_index = (i * m_numBatchesPerGroup);
+        Run_Settings* start = m_run_settings + start_index;
+        m_in_run_settings_buffer->SetData(start, m_numBatchesPerGroup * sizeof(Run_Settings));
+        //m_in_run_settings_buffer->SetData(&m_run_settings[i * m_numBatchesPerGroup], m_numBatchesPerGroup * sizeof(Run_Settings));
+
+        /*for (int i = 0; i < m_numBatchesPerGroup; i++) {
+            printf("Constructing (%i, %i, %i)\n",
+                start[i].Location.x, start[i].Location.y, start[i].Location.z);
+        }*/
+
+
         m_program_smoothrender_stitch_async->Execute(m_numBatchesPerGroup * m_static_settings.FullChunkSize[0], 0, 0);
+
+        //glm::vec4* Data = new glm::vec4[6144];
+
+        //m_out_vertex_buffer->GetData(Data, 3 * 6144 * sizeof(glm::vec4), counts.x * sizeof(glm::vec4));
+
+
+        //All_Zero(out_vertex, counts.x, "Extract");
+
     }
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration<double>(end - start).count();
@@ -807,19 +973,30 @@ void VoxelEngine::SmoothVoxelBuilder::Extract(glm::vec4* out_vertex, glm::vec4* 
     if (counts.x > 0) {
 
         if (!USE_CACHE) {
-            int start = 
-            //printf("Extract At: %i + %i\n", counts.z * counts.x, counts.x);
-            m_out_vertex_buffer->GetData(out_vertex, counts.z * counts.x * sizeof(glm::vec4), counts.x * sizeof(glm::vec4));
-            m_out_normal_buffer->GetData(out_normal, counts.z * counts.x * sizeof(glm::vec4), counts.x * sizeof(glm::vec4));
+            printf("Running extract for batch num %i\n", counts.z);
+            //int start = 
+            //printf("Extract: %i, %i, %i, %i\n", counts.x, counts.z, counts.y, counts.w);
+            m_out_vertex_buffer->GetData(out_vertex, counts.y * sizeof(glm::vec4), counts.x * sizeof(glm::vec4));
+            m_out_normal_buffer->GetData(out_normal, counts.y * sizeof(glm::vec4), counts.x * sizeof(glm::vec4));
 
-            m_out_triangles_buffer->GetData(out_trianges, counts.z * counts.x * sizeof(int), counts.x * sizeof(int));
+            //m_out_triangles_buffer->GetData(out_trianges, counts.z * counts.x * sizeof(int), counts.x * sizeof(int));
+            All_Zero(out_vertex, counts.x, "Extract");
 
-            /*for (int i = 0; i < counts.x; i += 3) {
+            for (int i = 0; i < counts.x; i += 3) {
                 int tris_start = i;
-                out_trianges[tris_start + 0] = tris_start + 2;
-                out_trianges[tris_start + 1] = tris_start + 1;
-                out_trianges[tris_start + 2] = tris_start + 0;
-            }*/
+
+                if (m_invert_tris) {
+                    out_trianges[tris_start + 0] = tris_start + 0;
+                    out_trianges[tris_start + 1] = tris_start + 1;
+                    out_trianges[tris_start + 2] = tris_start + 2;
+                }
+                else
+                {
+                    out_trianges[tris_start + 0] = tris_start + 2;
+                    out_trianges[tris_start + 1] = tris_start + 1;
+                    out_trianges[tris_start + 2] = tris_start + 0;
+                }
+            }
         }
         else {
             if (!extract_cached) {

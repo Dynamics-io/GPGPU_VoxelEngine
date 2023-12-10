@@ -52,9 +52,8 @@ float sphere_sample(float radius, float x, float y, float z){
     return radius - sqrt(pow(x - sphere_center.x, 2) + pow(y - sphere_center.y, 2) + pow(z - sphere_center.z, 2));
 }
 
-float iso_sample(float x, float y, float z){
+float iso_sample(float x, float y, float z, Settings s){
 
-    Settings s;
     return Sample_3D(s, x, y, z);
 
     //float radius = 10;
@@ -62,17 +61,17 @@ float iso_sample(float x, float y, float z){
     //return sphere_sample(radius, x, y, z);
 }
 
-float iso_sample(vec3 p){
-    return iso_sample(p.x, p.y, p.z);
+float iso_sample(vec3 p, Settings s){
+    return iso_sample(p.x, p.y, p.z,  s);
 }
 
-vec3 normal_sample(float x, float y, float z, float centerDistance){
+vec3 normal_sample(float x, float y, float z, float centerDistance, Settings s){
     vec3 p = vec3(x, y, z);
     float epsilon = 0.001; // arbitrary — should be smaller than any surface detail in your distance function, but not so small as to get lost in float precision
     //float centerDistance = iso_sample(p);
-    float xDistance = iso_sample(p + vec3(epsilon, 0, 0));
-    float yDistance = iso_sample(p + vec3(0, epsilon, 0));
-    float zDistance = iso_sample(p + vec3(0, 0, epsilon));
+    float xDistance = iso_sample(p + vec3(epsilon, 0, 0), s);
+    float yDistance = iso_sample(p + vec3(0, epsilon, 0), s);
+    float zDistance = iso_sample(p + vec3(0, 0, epsilon), s);
     vec3 normal = (vec3(xDistance - centerDistance, yDistance - centerDistance, zDistance - centerDistance)) / epsilon;
     return normal;
 }
@@ -118,25 +117,31 @@ void main()
     int inst_index = int(index) / static_settings.FullChunkSize[1];
     Run_Settings run_settings = in_run_settings[inst_index];
 
-    if (run_settings.Location.w == -1){
+    int ChunkSizeX = static_settings.ChunkSize.x;
+    int ChunkSizeY = static_settings.ChunkSize.y;
+    int ChunkSizeZ = static_settings.ChunkSize.z;
+
+    int FullChunkSize = (ChunkSizeX) * (ChunkSizeY) * (ChunkSizeZ);
+    int FullChunkSize_exp = (ChunkSizeX + 2) * (ChunkSizeY + 2) * (ChunkSizeZ + 2);
+
+    int numBatchesPerGroup = static_settings.batches[0];
+
+    if (run_settings.Location.w == -1 || index >= (FullChunkSize_exp * numBatchesPerGroup)){
         return;
     }
 
     int batchIndex = run_settings.Location.w;
     int batchIndexExpanded = run_settings.Location.w;
-    ivec4 batch = ivec4(batchIndex, batchIndexExpanded, static_settings.FullChunkSize[0], static_settings.FullChunkSize[1]);
+    ivec4 batch = ivec4(batchIndex, batchIndexExpanded, static_settings.FullChunkSize[0], FullChunkSize_exp);
 
     int voxel_index = GetVoxelIndex(batchIndexExpanded, int(index), batch[3]);
 
-    int ChunkSizeX = static_settings.ChunkSize.x;
-    int ChunkSizeY = static_settings.ChunkSize.y;
-    int ChunkSizeZ = static_settings.ChunkSize.z;
 
     float xSideLength = static_settings.SideLength.x;
     float ySideLength = static_settings.SideLength.y;
     float zSideLength = static_settings.SideLength.z;
 	
-    ivec3 index_pos = C_1D_to_3D(int(voxel_index), ChunkSizeX + 1, ChunkSizeZ + 1);
+    ivec3 index_pos = C_1D_to_3D(int(voxel_index), ChunkSizeX + 2, ChunkSizeZ + 2);
 
     // Coordinate of voxel in chunk
     int x = index_pos.x;
@@ -165,9 +170,14 @@ void main()
     float zWorldOrigin = (zStart * zSideLength) + zLocalWorld;
     vec3 pos_originWorld = vec3(xWorldOrigin, yWorldOrigin, zWorldOrigin);
 
+    Settings s;
+    s.ChunkSizeX = ChunkSizeX + 2;
+    s.ChunkSizeY = ChunkSizeY + 2;
+    s.ChunkSizeZ = ChunkSizeZ + 2;
+    s.VoxelsPerMeter = static_settings.VoxelsPerMeter[0];
 
 
-    float iso = iso_sample(pos_originWorld.x, pos_originWorld.y, pos_originWorld.z);
+    float iso = iso_sample(pos_originWorld.x, pos_originWorld.y, pos_originWorld.z, s);
     vec3 normal = vec3(0,0,0);//-normal_sample(pos_originWorld.x, pos_originWorld.y, pos_originWorld.z, iso);
 
     //setISOval(int(index), iso, vec3(voxel_index, batchIndexExpanded, GetBatchIndex(batchIndexExpanded, voxel_index, batch[3])));

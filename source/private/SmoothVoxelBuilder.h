@@ -3,7 +3,7 @@
 #include "stdafx.h"
 #include "ForwardDeclarations.h"
 #include "shared_structures.h"
-#include "IVoxelBuilder.h"
+#include "IVoxelBuilder_private.h"
 #include "dynamic_compute.h"
 #include "VoxelComputeProgram.h"
 
@@ -15,16 +15,16 @@ using namespace DynamicCompute::Compute;
 
 namespace VoxelEngine {
 
-	class SmoothVoxelBuilder : public IVoxelBuilder {
+	class SmoothVoxelBuilder : public IVoxelBuilder_private {
 	public:
 
-		void Init(ChunkSettings settings);
+		void Init(ChunkSettings* settings);
 
 		//void SetBlockTypes(BlockType* blockTypeList, Rect* AtlasUvs);
 
-		glm::dvec4 Render(ChunkRenderOptions options);
+		glm::dvec4 Render(ChunkRenderOptions* options);
 
-		glm::dvec4 Generate(ChunkGenerationOptions options);
+		glm::dvec4 Generate(ChunkGenerationOptions* options);
 
 		std::vector<glm::ivec4> GetSize();
 
@@ -41,6 +41,10 @@ namespace VoxelEngine {
 		//void SetSurroundingChunks();
 
 		void Dispose();
+
+		struct Run_Settings {
+			glm::ivec4 Location;
+		};
 
 	private:
 
@@ -77,9 +81,7 @@ namespace VoxelEngine {
 			alignas(16) int Z;
 		};*/
 
-		struct Run_Settings {
-			glm::ivec4 Location;
-		};
+		
 
 		struct ISO_Material {
 			alignas(16) glm::vec4 final_iso;
@@ -101,16 +103,20 @@ namespace VoxelEngine {
 
 		double GenerateHeightmap(int group, Run_Settings* group_start);
 
-		double GenerateISOField(int group);
+		double GenerateHeightmap_do_cache(int group, Run_Settings* group_start);
+		double GenerateHeightmap_dont_cache(int group, Run_Settings* group_start);
 
-		double GenerateMaterialField(int group);
 
-		double AssembleUnifiedField(int group);
+		double GenerateISOField(int group, Run_Settings* group_set);
+
+		double GenerateMaterialField(int group, Run_Settings* group_set);
+
+		double AssembleUnifiedField(int group, Run_Settings* group_set);
 
 
 		// Chunk Rendering
 
-		double Construct(int group);
+		double Construct(int group, Run_Settings* group_set);
 
 		glm::dvec4 DoRender();
 
@@ -135,7 +141,7 @@ namespace VoxelEngine {
 		const std::string PROGRAM = "compute";
 		VoxelComputeProgram* m_program_compute;
 
-		const std::string PROGRAM_HEIGHTMAP = "heightmap";
+		const std::string PROGRAM_HEIGHTMAP = "heightmap_field";
 		VoxelComputeProgram* m_program_heightmap;
 
 		const std::string PROGRAM_ISO_FIELD = "iso_field";
@@ -213,6 +219,8 @@ namespace VoxelEngine {
 		int m_numBatchesPerGroup;
 		int m_totalBatches;
 		
+		bool m_invert_tris = false;
+
 		// output cache
 		bool extract_cached = false;
 		glm::vec4* vertex_cache;
