@@ -54,6 +54,8 @@ struct ISO_Material{
 struct GridPoint{
     vec4 position;
     vec4 normal;
+    ivec4 type;
+    vec4 type_ratio;
 };
 
 layout(std140, binding = 0) buffer readonly SSBO_Static_Settings_In{
@@ -205,9 +207,17 @@ int SetMeshEntry(int voxelIndex, vec4 p1, vec4 n1, int t1, int count){
     return count;
 }
 
-GridPoint GetGridPoint(ivec4 batch, ivec4 batch_settings, int index, ivec4 index_pos, vec4 localWorldPos, int i, int ChunkSizeX, int ChunkSizeY, int ChunkSizeZ){
-
-    
+GridPoint GetGridPoint(
+    ivec4 batch, 
+    ivec4 batch_settings, 
+    int index, 
+    ivec4 index_pos, 
+    vec4 localWorldPos, 
+    int i,
+    int ChunkSizeX, 
+    int ChunkSizeY, 
+    int ChunkSizeZ
+){
 
     int index_exp = C_3D_to_1D(index_pos.x, index_pos.y, index_pos.z, ChunkSizeX + 1, ChunkSizeZ + 1);
 
@@ -224,6 +234,8 @@ GridPoint GetGridPoint(ivec4 batch, ivec4 batch_settings, int index, ivec4 index
     GridPoint point;
     point.position = vec4(localWorldPos.x, localWorldPos.y, localWorldPos.z, iso_mat.final_iso.w);
     point.normal = vec4(iso_mat.final_iso.x, iso_mat.final_iso.y, iso_mat.final_iso.z, 0);
+    point.type = iso_mat.material_types;
+    point.type_ratio = iso_mat.material_ratios;
 
     return point;
 
@@ -257,6 +269,8 @@ GridPoint VertexInterp(int edge_ent, int test, float isoLevel, GridPoint p1, Gri
     
     vec4 res_pos = vec4(0,0,0,0);
     vec4 res_norm = vec4(0,0,0,0);
+    ivec4 type = ivec4(0, 0, 0, 0);
+    vec4 type_ratios = vec4(0, 0, 0, 0);
 
     res_pos.x = pos_1.x + mu * (pos_2.x - pos_1.x);
     res_pos.y = pos_1.y + mu * (pos_2.y - pos_1.y);
@@ -267,10 +281,15 @@ GridPoint VertexInterp(int edge_ent, int test, float isoLevel, GridPoint p1, Gri
     res_norm.z = norm_1.z + mu * (norm_2.z - norm_1.z);
 
     res_pos.w = pos_1.w > 0 ? pos_1.w : pos_2.w; // INSIDE IS POSITIVE
+    type = mu < 0.5 ? p1.type : p2.type;
+    type_ratios = mu < 0.5 ? p1.type_ratio : p2.type_ratio;
+
 
     GridPoint point;
     point.position = res_pos;
     point.normal = res_norm;
+    point.type = type;
+    point.type_ratio = type_ratios;
     return point;
 }
 
@@ -355,6 +374,16 @@ void Process_Voxel(ivec4 batch, int g_index, int v_index, int cubeIndex, int edg
         GridPoint p1 = vertList[Get_Tritable(cubeIndex * 16 + (i + 0))];
         GridPoint p2 = vertList[Get_Tritable(cubeIndex * 16 + (i + 1))];
         GridPoint p3 = vertList[Get_Tritable(cubeIndex * 16 + (i + 2))];
+
+        p1.position.w = p1.type.x + p1.type_ratio.x;
+        p1.normal.w = p1.type.y + p1.type_ratio.y;
+
+        p2.position.w = p2.type.x + p2.type_ratio.x;
+        p2.normal.w = p2.type.y + p2.type_ratio.y;
+
+        p3.position.w = p3.type.x + p3.type_ratio.x;
+        p3.normal.w = p3.type.y + p3.type_ratio.y;
+
 
         //vec3 dir = cross(p2.xyz - p1.xyz, p3.xyz - p1.xyz);
         //vec3 norm = -normalize(dir);
@@ -475,7 +504,17 @@ void RenderBlock(ivec4 batch, int g_index, int v_index, ISO_Material point, Stat
     GridPoint grid[8];
 
     for (int i = 0; i < 8; i++){
-        grid[i] = GetGridPoint(batch, batch_settings, v_index, index_pos + in_directionOffsets[i].values, pos_localWorld + in_globalOffsets[i].values, i, ChunkSizeX, ChunkSizeY, ChunkSizeZ);
+        grid[i] = GetGridPoint(
+            batch, 
+            batch_settings, 
+            v_index, 
+            index_pos + in_directionOffsets[i].values, 
+            pos_localWorld + in_globalOffsets[i].values, 
+            i, 
+            ChunkSizeX, 
+            ChunkSizeY, 
+            ChunkSizeZ
+        );
     }
 
     Set_Count(GetBatchIndex(batch[0], v_index, batch[2]), 0);

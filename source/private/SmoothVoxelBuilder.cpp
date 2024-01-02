@@ -8,6 +8,8 @@ using namespace VoxelEngine;
 
 #define USE_HEIGHTMAP_CACHE false
 
+#define COMPUTE_TRIANGES false
+
 glm::fvec4 DirectionOffsets_f(int index) {
     return (glm::fvec4)MarchingCubesArrays::directionOffsets[index];
 }
@@ -181,8 +183,8 @@ glm::dvec4 VoxelEngine::SmoothVoxelBuilder::Generate(ChunkGenerationOptions* opt
         //    printf("Running Batch %i (%i)\n", start[j].Location.w, start_index);
         //}
 
-        GenerateHeightmap(i, start);
-        result.x += GenerateISOField(i, start);
+        //GenerateHeightmap(i, start);
+        //result.x += GenerateISOField(i, start);
         //GenerateMaterialField(i, start);
         result.y += AssembleUnifiedField(i, start);
 
@@ -982,19 +984,22 @@ void VoxelEngine::SmoothVoxelBuilder::Extract(glm::vec4* out_vertex, glm::vec4* 
             //m_out_triangles_buffer->GetData(out_trianges, counts.z * counts.x * sizeof(int), counts.x * sizeof(int));
             All_Zero(out_vertex, counts.x, "Extract");
 
-            for (int i = 0; i < counts.x; i += 3) {
-                int tris_start = i;
+            if (COMPUTE_TRIANGES) {
 
-                if (m_invert_tris) {
-                    out_trianges[tris_start + 0] = tris_start + 0;
-                    out_trianges[tris_start + 1] = tris_start + 1;
-                    out_trianges[tris_start + 2] = tris_start + 2;
-                }
-                else
-                {
-                    out_trianges[tris_start + 0] = tris_start + 2;
-                    out_trianges[tris_start + 1] = tris_start + 1;
-                    out_trianges[tris_start + 2] = tris_start + 0;
+                for (int i = 0; i < counts.x; i += 3) {
+                    int tris_start = i;
+
+                    if (m_invert_tris) {
+                        out_trianges[tris_start + 0] = tris_start + 0;
+                        out_trianges[tris_start + 1] = tris_start + 1;
+                        out_trianges[tris_start + 2] = tris_start + 2;
+                    }
+                    else
+                    {
+                        out_trianges[tris_start + 0] = tris_start + 2;
+                        out_trianges[tris_start + 1] = tris_start + 1;
+                        out_trianges[tris_start + 2] = tris_start + 0;
+                    }
                 }
             }
         }
